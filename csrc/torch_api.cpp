@@ -45,8 +45,18 @@ get_mla_decoding_metadata(
     int block_size_n = 64;
     
     if (topk.has_value()) {
-        const int heads_per_64 = std::max(1, num_heads_q / 64);
-        num_sm_parts = std::max(arch.num_sms / s_q / heads_per_64, 1);
+        // Sparse FP8 decode - formula differs by architecture
+        // Must match the formulas in api/sparse_decode.h
+        if (arch.is_sm100f()) {
+            // SM100 head64/head64x2 use: num_sms / s_q
+            // SM100 head128 uses: num_sms / s_q / 2
+            // Use larger buffer (num_sms / s_q) to be safe for both
+            num_sm_parts = std::max(arch.num_sms / s_q, 1);
+        } else {
+            // SM90 uses: num_sms / s_q / (h_q/64)
+            const int heads_per_64 = std::max(1, num_heads_q / 64);
+            num_sm_parts = std::max(arch.num_sms / s_q / heads_per_64, 1);
+        }
     } else {
         num_sm_parts = std::max(arch.num_sms / h_k / cutlass::ceil_div(s_q * num_heads_q / h_k, 64), 1);
     }
