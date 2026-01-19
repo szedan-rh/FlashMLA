@@ -7,16 +7,6 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <kerutils/supplemental/torch_tensors.h>
 
-// == Extra inlcudes to support C++20 on older compilers (GNU 10)
-#include <array>
-#include <cstdio>
-#include <limits>
-#include <span>
-#include <string_view>
-#include <type_traits>
-#include <vector>
-// ==============================================================
-
 #include <cutlass/bfloat16.h>
 
 static constexpr float LOG_2_E = 1.44269504f;
