@@ -180,6 +180,8 @@ CLCResult get_clc_query_response(CLCResponseObj &response_obj) {
 // L1_CACHE_HINT_STR should be either "evict_first", "evict_normal", "evict_last", "evict_unchanged", or "no_allocate"
 // L2_CACHE_HINT_STR should be either "evict_first", "evict_normal", or "evict_last"
 // L2_PREFETCH_SIZE_STR should be either "64B", "128B", or "256B"
+#if (__CUDACC_VER_MAJOR__ > 12) || (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 9)
+// CUDA 12.9+: single 256-bit load with L2::256B prefetch hint
 #define KU_LDG_256(global_addr, result, NC_STR, L1_CACHE_HINT_STR, L2_CACHE_HINT_STR, L2_PREFETCH_SIZE_STR) \
     { \
         static_assert(std::is_pointer_v<decltype(global_addr)> || std::is_array_v<decltype(global_addr)>, "`global_addr` must be a pointer"); \
@@ -192,6 +194,26 @@ CLCResult get_clc_query_response(CLCResponseObj &response_obj) {
             : "l"(global_addr) \
         ); \
     }
+#else
+// CUDA 12.8 and earlier: two 128-bit loads (L2::256B not supported, v4.u64 exceeds 128-bit limit)
+#define KU_LDG_256(global_addr, result, NC_STR, L1_CACHE_HINT_STR, L2_CACHE_HINT_STR, L2_PREFETCH_SIZE_STR) \
+    { \
+        static_assert(std::is_pointer_v<decltype(global_addr)> || std::is_array_v<decltype(global_addr)>, "`global_addr` must be a pointer"); \
+        static_assert(std::is_pointer_v<decltype(result)> || std::is_array_v<decltype(result)>, "`result` must be a pointer"); \
+        uint64_t* result_as_uint64_ptr = (uint64_t*)(result); \
+        const char* base = (const char*)(global_addr); \
+        asm volatile( \
+            "ld.global" NC_STR ".L1::" L1_CACHE_HINT_STR ".L2::128B.v2.u64 {%0, %1}, [%2];\n" \
+            : "=l"(result_as_uint64_ptr[0]), "=l"(result_as_uint64_ptr[1]) \
+            : "l"(base) \
+        ); \
+        asm volatile( \
+            "ld.global" NC_STR ".L1::" L1_CACHE_HINT_STR ".L2::128B.v2.u64 {%0, %1}, [%2];\n" \
+            : "=l"(result_as_uint64_ptr[2]), "=l"(result_as_uint64_ptr[3]) \
+            : "l"(base + 16) \
+        ); \
+    }
+#endif
 
 // STG.256 (https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-st)
 // L1_CACHE_HINT_STR should be either "evict_first", "evict_normal", "evict_last", "evict_unchanged", or "no_allocate"
