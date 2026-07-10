@@ -1,34 +1,44 @@
 #pragma once
 
 #include <span>
+#include <array>
 
-// Note: Avoid <torch/extension.h> as it pulls in pybind11 internals that
-// use _PyThreadState_UncheckedGet, which is not in the stable ABI and was
-// removed in Python 3.13. Use specific headers instead.
-#include <torch/torch.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <cuda_runtime.h>
+
+#include <torch/csrc/stable/tensor.h>
+#include <torch/csrc/stable/library.h>
+#include <torch/csrc/stable/ops.h>
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/inductor/aoti_torch/c/shim.h>
+
+#include <torch/headeronly/core/ScalarType.h>
+#include <torch/headeronly/util/Exception.h>
+#include <torch/headeronly/util/shim_utils.h>
+
 #include <kerutils/supplemental/torch_tensors.h>
+#include <kerutils/supplemental/cuda_stream.h>
+#include <kerutils/supplemental/device_prop.h>
 
 #include <cutlass/bfloat16.h>
 
-static constexpr float LOG_2_E = 1.44269504f;
+using torch::stable::Tensor;
+using torch::headeronly::ScalarType;
 
-// Instantiation for tensor.data_ptr<cutlass::bfloat16_t>()
-template<>
-inline cutlass::bfloat16_t* at::TensorBase::data_ptr<cutlass::bfloat16_t>() const {
-    return reinterpret_cast<cutlass::bfloat16_t*>(this->data_ptr());
-}
+// Re-exported from kerutils so existing call sites can use them unqualified.
+using kerutils::get_current_cuda_stream;
+using kerutils::get_cached_device_prop;
+
+static constexpr float LOG_2_E = 1.44269504f;
 
 // A struct that holds the architecture information of the current GPU.
 struct Arch {
     int major;
     int minor;
     int num_sms;
-    cudaDeviceProp* device_prop;
+    const cudaDeviceProp* device_prop;
 
     Arch() {
-        device_prop = at::cuda::getCurrentDeviceProperties();
+        device_prop = &get_cached_device_prop();
         major = device_prop->major;
         minor = device_prop->minor;
         num_sms = device_prop->multiProcessorCount;
@@ -46,7 +56,7 @@ struct Arch {
 // Convert int64_t stride to int32_t, with overflow check.
 inline int int64_stride_to_int(int64_t orig_stride) {
     if (orig_stride > std::numeric_limits<int>::max()) {
-        TORCH_CHECK(false, "[FlashMLA] Stride exceeds int32 limit: ", orig_stride);
+        STD_TORCH_CHECK(false, "[FlashMLA] Stride exceeds int32 limit: ", orig_stride);
     }
     return static_cast<int>(orig_stride);
 }
@@ -60,7 +70,7 @@ inline int int64_stride_to_int(int64_t orig_stride) {
             static constexpr int CONSTEXPR_NAME = 64; \
             return __VA_ARGS__(); \
         } else { \
-            TORCH_CHECK(false, "Unsupported num_heads_q: ", NUM_HEADS); \
+            STD_TORCH_CHECK(false, "Unsupported num_heads_q: ", NUM_HEADS); \
         } \
     } ();
 
@@ -73,7 +83,7 @@ inline int int64_stride_to_int(int64_t orig_stride) {
         static constexpr int CONSTEXPR_NAME = 512; \
         return __VA_ARGS__(); \
     } else { \
-        TORCH_CHECK(false, "Unsupported head_dim_qk: ", HEAD_DIM); \
+        STD_TORCH_CHECK(false, "Unsupported head_dim_qk: ", HEAD_DIM); \
     } \
 } ();
 
@@ -97,7 +107,7 @@ inline int int64_stride_to_int(int64_t orig_stride) {
         static constexpr ModelType CONSTEXPR_NAME = ModelType::MODEL1; \
         return __VA_ARGS__(); \
     } else { \
-        TORCH_CHECK(false, "Unsupported model type: ", (int)MODEL_TYPE); \
+        STD_TORCH_CHECK(false, "Unsupported model type: ", (int)MODEL_TYPE); \
     } \
 } ();
 
@@ -123,7 +133,7 @@ constexpr auto get_static_enum_name(){
     };
 }
 
-template<typename T, std::size_t N = 0> 
+template<typename T, std::size_t N = 0>
 static constexpr std::size_t get_enum_max(){
     constexpr T value = static_cast<T>(N);
     if constexpr (get_static_enum_name<value>().find(")") == std::string_view::npos)
@@ -136,8 +146,8 @@ template<typename T> requires std::is_enum_v<T>
 static constexpr std::string get_dynamic_enum_name(T value){
     constexpr std::size_t num = get_enum_max<T>();
     constexpr auto names = []<std::size_t... Is>(std::index_sequence<Is...>){
-        return std::array<std::string_view, num>{ 
-            get_static_enum_name<static_cast<T>(Is)>()... 
+        return std::array<std::string_view, num>{
+            get_static_enum_name<static_cast<T>(Is)>()...
         };
     }(std::make_index_sequence<num>{});
     return (std::string)names[static_cast<std::size_t>(value)];
@@ -222,7 +232,7 @@ public:
             Arch cur_gpu_arch = Arch();
             fprintf(stderr, "Current GPU: %s, SM %d.%d with %d SMs\n", cur_gpu_arch.device_prop->name, cur_gpu_arch.major, cur_gpu_arch.minor, cur_gpu_arch.num_sms);
             fprintf(stderr, "This means that the dispatcher has chosen an implementation that does not support all required features. Maybe there is a bug in the dispatcher, or you have requested an invalid combination of features.\n");
-            TORCH_CHECK(false, "The chosen implementation does not support all required features. See message above for details.");
+            STD_TORCH_CHECK(false, "The chosen implementation does not support all required features. See message above for details.");
         }
     }
 
@@ -231,4 +241,3 @@ public:
         run_(params, required_features);
     }
 };
-

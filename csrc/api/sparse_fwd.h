@@ -98,22 +98,22 @@ protected:
     }
 };
 
-static std::vector<at::Tensor> sparse_attn_prefill_interface(
-    const at::Tensor &q,
-    const at::Tensor &kv,
-    const at::Tensor &indices,
-    float sm_scale,
-    int d_v,
-    const std::optional<at::Tensor> &attn_sink,
-    const std::optional<at::Tensor> &topk_length,
-    const std::optional<at::Tensor> &out_
+static std::vector<Tensor> sparse_attn_prefill_interface(
+    const Tensor &q,
+    const Tensor &kv,
+    const Tensor &indices,
+    double sm_scale,
+    int64_t d_v,
+    const std::optional<Tensor> &attn_sink,
+    const std::optional<Tensor> &topk_length,
+    const std::optional<Tensor> &out_
 ) {
     using bf16 = cutlass::bfloat16_t;
     
     Arch arch = Arch();
     bool is_sm90a = arch.is_sm90a();
     bool is_sm100f = arch.is_sm100f();
-    TORCH_CHECK(is_sm90a || is_sm100f, "Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.");
+    STD_TORCH_CHECK(is_sm90a || is_sm100f, "Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.");
 
     KU_CHECK_NDIM(q, 3);
     KU_CHECK_NDIM(kv, 3);
@@ -129,8 +129,8 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     int topk = indices.size(2);
     bool have_topk_length = topk_length.has_value();
 
-    TORCH_CHECK(d_qk == 576 || d_qk == 512, "Invalid d_qk: ", d_qk);
-    TORCH_CHECK(d_v == 512, "Invalid d_v", d_v);
+    STD_TORCH_CHECK(d_qk == 576 || d_qk == 512, "Invalid d_qk: ", d_qk);
+    STD_TORCH_CHECK(d_v == 512, "Invalid d_v", d_v);
     
     KU_CHECK_DEVICE(q);
     KU_CHECK_DEVICE(kv);
@@ -138,11 +138,11 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     KU_CHECK_DEVICE(attn_sink);
     KU_CHECK_DEVICE(topk_length);
     
-    KU_CHECK_DTYPE(q, torch::kBFloat16);
-    KU_CHECK_DTYPE(kv, torch::kBFloat16);
-    KU_CHECK_DTYPE(indices, torch::kInt32);
-    KU_CHECK_DTYPE(attn_sink, torch::kFloat32);
-    KU_CHECK_DTYPE(topk_length, torch::kInt32);
+    KU_CHECK_DTYPE(q, ScalarType::BFloat16);
+    KU_CHECK_DTYPE(kv, ScalarType::BFloat16);
+    KU_CHECK_DTYPE(indices, ScalarType::Int);
+    KU_CHECK_DTYPE(attn_sink, ScalarType::Float);
+    KU_CHECK_DTYPE(topk_length, ScalarType::Int);
     
     KU_CHECK_SHAPE(q, s_q, h_q, d_qk);
     KU_CHECK_SHAPE(kv, s_kv, h_kv, d_qk);
@@ -157,21 +157,20 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     KU_CHECK_LAST_DIM_CONTIGUOUS(topk_length);
     
     // Allocate results and buffers
-    at::cuda::CUDAGuard device_guard{(char)q.get_device()};
-    auto opts = q.options();
-    
-    at::Tensor out;
+    torch::stable::accelerator::DeviceGuard device_guard(q.get_device_index());
+
+    Tensor out;
     if (out_.has_value()) {
         out = out_.value();
-        KU_CHECK_DTYPE(out, torch::kBFloat16);
+        KU_CHECK_DTYPE(out, ScalarType::BFloat16);
         KU_CHECK_SHAPE(out, s_q, h_q, d_v);
         KU_CHECK_LAST_DIM_CONTIGUOUS(out);
         KU_CHECK_DEVICE(out);
     } else {
-        out = torch::empty({s_q, h_q, d_v}, opts);
+        out = torch::stable::new_empty(q, {s_q, h_q, d_v});
     }
-    at::Tensor lse = torch::empty({s_q, h_q}, opts.dtype(torch::kFloat));
-    at::Tensor max_logits = torch::empty({s_q, h_q}, opts.dtype(torch::kFloat));
+    Tensor lse = torch::stable::new_empty(q, {s_q, h_q}, ScalarType::Float);
+    Tensor max_logits = torch::stable::new_empty(q, {s_q, h_q}, ScalarType::Float);
     KU_CHECK_CONTIGUOUS(out);
     KU_CHECK_CONTIGUOUS(lse);
     KU_CHECK_CONTIGUOUS(max_logits);
@@ -195,7 +194,7 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
         (float*)lse.data_ptr(),
 
         arch.num_sms,
-        at::cuda::getCurrentCUDAStream().stream()
+        get_current_cuda_stream(q)
     };
 
     std::vector<FwdFeatures> required_features;
@@ -204,14 +203,14 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     } else if (h_q == 128) {
         required_features.push_back(FwdFeatures::HEAD_128);
     } else {
-        TORCH_CHECK(false, "Unsupported h_q: ", h_q);
+        STD_TORCH_CHECK(false, "Unsupported h_q: ", h_q);
     }
     if (d_qk == 576) {
         required_features.push_back(FwdFeatures::HEAD_DIM_576);
     } else if (d_qk == 512) {
         required_features.push_back(FwdFeatures::HEAD_DIM_512);
     } else {
-        TORCH_CHECK(false, "Unsupported d_qk: ", d_qk);
+        STD_TORCH_CHECK(false, "Unsupported d_qk: ", d_qk);
     }
     if (attn_sink.has_value()) {
         required_features.push_back(FwdFeatures::ATTN_SINK);
@@ -243,10 +242,10 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
                 regular_impl.run(params, required_features);
             }
         } else {
-            TORCH_CHECK(false, "Unsupported h_q: ", h_q);
+            STD_TORCH_CHECK(false, "Unsupported h_q: ", h_q);
         }
     } else {
-        TORCH_CHECK(false, "Unsupported architecture");
+        STD_TORCH_CHECK(false, "Unsupported architecture");
     }
 
     return {out, max_logits, lse};
